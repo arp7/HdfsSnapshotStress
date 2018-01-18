@@ -22,10 +22,9 @@ package net.arp7.hadoop.test;
 public class StressLimits
 {
   public static final int MAX_SNAPSHOTS = 100;
-  public static final int MIN_SNAPSHOTS = 40;
   public static final int MAX_FILES = 1048576;
   public static final int MIN_FILES = 1024;
-  public static final int SNAPSHOTS_OP_PROBABILITY = 10;
+  public static final int SNAPSHOTS_OP_PROBABILITY = 5;
   public static final int CREATE_FILE_PROBABILITY = 75;
-  public static final int CHECKPOINT_INTERVAL_MS = 30000;
+  public static final int CHECKPOINT_INTERVAL_MS = 120_000; // 2 minutes.
 }

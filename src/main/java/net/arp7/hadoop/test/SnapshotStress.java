@@ -20,7 +20,7 @@ package net.arp7.hadoop.test;
 
 import java.io.IOException;
 import java.net.ConnectException;
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.TreeSet;
@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathIOException;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.hdfs.server.namenode.SafeModeException;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
@@ -53,7 +53,7 @@ public class SnapshotStress {
   private final Path outsideRoot;
   
   // Set of file IDs currently in the snapshot dir.
-  private TreeSet<Long> filesInSnapshot;
+  private TreeSet<Long> filesInSnapshotDir;
 
   // Set of file IDs currently outside the snapshot dir.
   private TreeSet<Long> filesOutside;
@@ -126,19 +126,21 @@ public class SnapshotStress {
     snapshotRoot = new Path(testArgs.getTestRoot(), "snapshotRoot");
     outsideRoot = new Path(testArgs.getTestRoot(), "outsideDir");
 
-    filesInSnapshot = new TreeSet<>();
+    filesInSnapshotDir = new TreeSet<>();
     filesOutside = new TreeSet<>();
-    snapshots = new LinkedList<>();
+    snapshots = new ArrayList<>();
     random = new Random();
   }
 
   private void run() throws IOException, InterruptedException {
     makeTestDirs();
+    lastCheckpointOpTimeMs = Time.monotonicNow();
     scheduleNextCheckpointOperation();
 
     for (;;)
     {
-      boolean doSnapshotOp = random.nextInt(100) < 10;
+      boolean doSnapshotOp = 
+          random.nextInt(100) < StressLimits.SNAPSHOTS_OP_PROBABILITY;
       try {
         if (doSnapshotOp) {
           doSnapshotOperation();
@@ -149,7 +151,7 @@ public class SnapshotStress {
       } catch (FileIdNotFoundException e) {
         // We tried to do a delete/move before a file could be created
         // in the target directory. Just ignore and continue.
-      } catch (ConnectException|StandbyException e) {
+      } catch (ConnectException|SafeModeException e) {
         // Retry in a short while, assuming the NameNode will be up
         // soon.
         Thread.sleep(1000L);
@@ -202,7 +204,7 @@ public class SnapshotStress {
 
   /**
    * Schedule a new checkpoint to be taken sometime between
-   * [CHECKPOINT_INTERVAL_MS, 2*CHECKPOINT_INTERVAL_MS).
+   * [CHECKPOINT_INTERVAL_MS, 2*CHECKPOINT_INTERVAL_MS) from now.
    */
   private void scheduleNextCheckpointOperation() {
     int jitter = random.nextInt(StressLimits.CHECKPOINT_INTERVAL_MS);
@@ -222,13 +224,13 @@ public class SnapshotStress {
    */
   private void doFileOperation()
       throws IOException, SnapshotStress.FileIdNotFoundException {
-    int totalFiles = filesInSnapshot.size() + filesOutside.size();
+    int totalFiles = filesInSnapshotDir.size() + filesOutside.size();
 
-    if (totalFiles < 1024) {
+    if (totalFiles < StressLimits.MIN_FILES) {
       createFile();
-    } else if (totalFiles >= 1048576) {
+    } else if (totalFiles >= StressLimits.MAX_FILES) {
       if (random.nextBoolean()) {
-        deleteFile(filesInSnapshot, snapshotRoot);
+        deleteFile(filesInSnapshotDir, snapshotRoot);
       } else {
         deleteFile(filesOutside, outsideRoot);
       }
@@ -242,16 +244,16 @@ public class SnapshotStress {
       createFile();
     } else if (coin < 45) {
       // Delete a file from snapshot dir with 5% probability.
-      deleteFile(filesInSnapshot, snapshotRoot);
+      deleteFile(filesInSnapshotDir, snapshotRoot);
     } else if (coin < 50) {
       // Delete a file out of snapshot dir with 5% probability.
       deleteFile(filesOutside, outsideRoot);
     } else if (coin < 75) {
       // Move a file out of snapshot dir with 25% probability.
-      moveFile(filesInSnapshot, snapshotRoot, filesOutside, outsideRoot);
+      moveFile(filesInSnapshotDir, snapshotRoot, filesOutside, outsideRoot);
     } else {
       // Move a file into snapshot dir with 25% probability.
-      moveFile(filesOutside, outsideRoot, filesInSnapshot, snapshotRoot);
+      moveFile(filesOutside, outsideRoot, filesInSnapshotDir, snapshotRoot);
     }
   }
 
@@ -295,27 +297,34 @@ public class SnapshotStress {
     long id = ++fileIdCounter;
     Path path = getFilePath(id, snapshotRoot);
     fs.create(path, false).close();
-    filesInSnapshot.add(id);
+    filesInSnapshotDir.add(id);
     LOG.info("Created file {}", path);
   }
 
   private void doSnapshotOperation() throws IOException {
-    if (((snapshots.size() < 40) ||
-        (random.nextInt(100) < 75)) &&
-        (snapshots.size() < 100)) {
+    if (random.nextInt(100) < 95 &&
+        snapshots.size() < StressLimits.MAX_SNAPSHOTS) {
       createSnapshot();
     } else {
-      deleteOldestSnapshot();
+      deleteSnapshots();
     }
   }
 
-  private void deleteOldestSnapshot() throws IOException {
-    if (snapshots.size() > 0) {
-      String name = snapshots.get(0);
+  private void deleteSnapshots() throws IOException {
+    final int numSnapshotsToDelete = random.nextInt(snapshots.size());
+    int i = 0;
+    
+    LOG.info("Deleting {} of {} snapshots",
+        numSnapshotsToDelete, snapshots.size());
+    while (i < numSnapshotsToDelete && snapshots.size() > 0) {
+      final int deleteIndex = random.nextInt(snapshots.size());
+      String name = snapshots.get(deleteIndex);
       fs.deleteSnapshot(snapshotRoot, name);
-      snapshots.remove(0);
-      LOG.info("Deleted snapshot {}", name);
+      snapshots.remove(deleteIndex);
+      LOG.info("    >> Deleted snapshot {}", name);
+      ++i;
     }
+    LOG.info("Deleted {} snapshots.", i);
   }
 
   private void createSnapshot() throws IOException {
