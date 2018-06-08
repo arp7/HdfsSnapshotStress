@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.TreeSet;
+
+import net.arp7.hadoop.test.FsState.Dir;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -49,14 +51,8 @@ public class SnapshotStress {
   private final StressArgs testArgs;
   private final FileSystem fs;
   private final Configuration conf;
-  private final Path snapshotRoot;
-  private final Path outsideRoot;
-  
-  // Set of file IDs currently in the snapshot dir.
-  private TreeSet<Long> filesInSnapshotDir;
-
-  // Set of file IDs currently outside the snapshot dir.
-  private TreeSet<Long> filesOutside;
+  private final Dir snapshotRoot;
+  private final Dir outsideRoot;
   
   // A list of snapshots. The first entry in the list is the oldest snapshot.
   private List<String> snapshots;
@@ -79,6 +75,8 @@ public class SnapshotStress {
   // Time at which the last checkpoint was taken. Retrieved using
   // {@link Time#monotonicNow}.
   private long lastCheckpointOpTimeMs;
+  
+  private final FsState fsState;
 
   public static void main(String[] args) throws Exception {
     StressArgs testArgs = StressArgs.parse(args);
@@ -99,7 +97,8 @@ public class SnapshotStress {
           "Test Directory already exists and is non-empty.");
     }
 
-    if ((!fs.mkdirs(snapshotRoot)) || (!fs.mkdirs(outsideRoot))) {
+    if (!fs.mkdirs(new Path(snapshotRoot.getFullPath())) ||
+        !fs.mkdirs(new Path(outsideRoot.getFullPath()))) {
       throw new PathIOException(
           testArgs.getTestRoot().toString(),
           "Failed to create test directories.");
@@ -123,11 +122,12 @@ public class SnapshotStress {
               " is not supported.");
     }
 
-    snapshotRoot = new Path(testArgs.getTestRoot(), "snapshotRoot");
-    outsideRoot = new Path(testArgs.getTestRoot(), "outsideDir");
+    Path snapRoot = new Path(testArgs.getTestRoot(), "snapshotRoot");
+    Path otherRoot = new Path(testArgs.getTestRoot(), "outsideDir");
 
-    filesInSnapshotDir = new TreeSet<>();
-    filesOutside = new TreeSet<>();
+    fsState = new FsState();
+    snapshotRoot = fsState.mkdirs(snapRoot);
+    outsideRoot = fsState.mkdirs(otherRoot);
     snapshots = new ArrayList<>();
     random = new Random();
   }
